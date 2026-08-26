@@ -1,0 +1,18 @@
+schema_version = "1.0.0"
+
+id = "domemastereevee"
+version = "0.4.1"
+name = "DomeMasterEEVEE"
+description = "Fulldome fisheye rendering and preview for EEVEE, with adjustable FOV and sampling diagnostics"
+type = "add-on"
+
+authors = [
+    { name = "Nguyen Duc Tri", email = "dr.tringuyenzmc@gmail.com" }
+]
+
+blender_version_min = "4.0.0"
+
+url = ""
+license = ["GPL"]
+
+tags = ["Render"]
