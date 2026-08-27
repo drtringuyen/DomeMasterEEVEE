@@ -87,7 +87,7 @@ class DOMEMASTEREEVEE_PT_DomeRender(bpy.types.Panel):
 
         row = box1.row(align=True)
         row.operator("domemastereevee.optimize_scene_rendering",
-                     icon='SHADERFX')
+                     icon='CAMERA_DATA')
 
         box2 = layout.box()
         split = box2.split(factor=0.8, align=True)

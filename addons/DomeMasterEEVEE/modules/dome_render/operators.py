@@ -1,3 +1,4 @@
+import math
 import os
 import shutil
 import time
@@ -180,14 +181,21 @@ class DOMEMASTEREEVEE_OT_OpenOutputFolder(bpy.types.Operator):
         return {'FINISHED'}
 
 
+CAMERA_NAME = "Camera-DOME-Master"
+
+
 class DOMEMASTEREEVEE_OT_OptimizeSceneRendering(bpy.types.Operator):
-    """Lower render settings that cost time on every dome face without a
-    visible quality change: enable Persistent Data (avoids re-uploading
-    geometry/BVH for each of the 5 cube faces), cap render samples, disable
-    Ray Tracing, cap shadow step count, and turn off Motion Blur"""
+    """Create the dome master camera (from the selected camera's position,
+    or the 3D cursor if none is selected), point it straight up, make it the
+    scene camera, set it to orthographic with a size-6 view and full
+    passepartout, match the render resolution to the domemaster Output
+    Resolution, and then apply the usual render-time optimizations: enable
+    Persistent Data (avoids re-uploading geometry/BVH for each of the 5 cube
+    faces), cap render samples, disable Ray Tracing, cap shadow step count,
+    and turn off Motion Blur"""
 
     bl_idname = "domemastereevee.optimize_scene_rendering"
-    bl_label = "Optimize Scene Rendering"
+    bl_label = "Setup Camera & Optimize Scene"
     bl_options = {'REGISTER', 'UNDO'}
 
     max_samples: bpy.props.IntProperty(
@@ -199,9 +207,45 @@ class DOMEMASTEREEVEE_OT_OptimizeSceneRendering(bpy.types.Operator):
 
     def execute(self, context):
         scene = context.scene
+        props = _props(context)
         eevee = scene.eevee
         r = scene.render
         changes = []
+
+        active = context.view_layer.objects.active
+        selected_cams = [o for o in context.selected_objects if o.type == 'CAMERA']
+        if active is not None and active.type == 'CAMERA' and active in selected_cams:
+            position = active.matrix_world.translation.copy()
+        elif selected_cams:
+            position = selected_cams[0].matrix_world.translation.copy()
+        else:
+            position = scene.cursor.location.copy()
+
+        existing = bpy.data.objects.get(CAMERA_NAME)
+        if existing is not None:
+            old_data = existing.data
+            bpy.data.objects.remove(existing, do_unlink=True)
+            if old_data is not None and old_data.users == 0:
+                bpy.data.cameras.remove(old_data)
+
+        cam_data = bpy.data.cameras.new(CAMERA_NAME)
+        cam_data.type = 'ORTHO'
+        cam_data.ortho_scale = 6.0
+        cam_data.passepartout_alpha = 1.0
+
+        cam_obj = bpy.data.objects.new(CAMERA_NAME, cam_data)
+        cam_obj.location = position
+        cam_obj.rotation_euler = (math.pi, 0.0, 0.0)
+        context.collection.objects.link(cam_obj)
+
+        scene.camera = cam_obj
+        changes.append("Created '%s' (ortho, size 6, facing up)" % CAMERA_NAME)
+
+        if r.resolution_x != props.output_resolution or r.resolution_y != props.output_resolution:
+            r.resolution_x = props.output_resolution
+            r.resolution_y = props.output_resolution
+            changes.append("Render Resolution -> %dx%d"
+                            % (props.output_resolution, props.output_resolution))
 
         if not r.use_persistent_data:
             r.use_persistent_data = True
