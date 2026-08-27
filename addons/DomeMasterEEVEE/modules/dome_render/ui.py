@@ -90,6 +90,8 @@ class DOMEMASTEREEVEE_PT_DomeRender(bpy.types.Panel):
         opts = layout.column(align=True)
         opts.prop(props, "keep_faces")
         opts.prop(props, "use_gpu_remap")
+        opts.operator("domemastereevee.optimize_scene_rendering",
+                      icon='SHADERFX')
 
         layout.separator()
         col = layout.column(align=True)

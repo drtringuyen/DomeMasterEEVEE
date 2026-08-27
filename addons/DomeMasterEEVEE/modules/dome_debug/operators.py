@@ -306,10 +306,117 @@ class DOMEMASTEREEVEE_OT_MakeOrientationRig(bpy.types.Operator):
         return {'FINISHED'}
 
 
+# --------------------------------------------------------------------------- #
+# Material alpha audit                                                        #
+#                                                                              #
+# EEVEE Next (Blender 4.2+) drives transparency through                      #
+# Material.surface_render_method, which only has two values: DITHERED        #
+# (stochastic, noisy until enough samples accumulate -- shows as "Hashed"    #
+# in the legacy blend_method mirror) and BLENDED (traditional back-to-front  #
+# alpha blend, zero per-pixel noise, but sorted per-object rather than       #
+# per-triangle so overlapping transparent surfaces can show ordering         #
+# artifacts). Material.blend_method still exists for API compatibility but   #
+# does not drive the actual EEVEE Next render -- writing 'CLIP' to it is a   #
+# silent no-op, so these operators target surface_render_method directly and #
+# fall back to the old blend_method enum only pre-4.2.                       #
+# --------------------------------------------------------------------------- #
+def _uses_next_api(mat):
+    return hasattr(mat, "surface_render_method")
+
+
+def _current_mode(mat):
+    if _uses_next_api(mat):
+        return mat.surface_render_method     # 'DITHERED' or 'BLENDED'
+    return mat.blend_method                  # legacy: OPAQUE/CLIP/HASHED/BLEND
+
+
+def _noisy_mode(mat):
+    """The value that corresponds to per-pixel stochastic noise."""
+    return 'DITHERED' if _uses_next_api(mat) else 'HASHED'
+
+
+def _set_mode(mat, value):
+    if _uses_next_api(mat):
+        mat.surface_render_method = value
+    else:
+        mat.blend_method = value
+
+
+def _toggled(mat):
+    if _uses_next_api(mat):
+        return 'BLENDED' if _current_mode(mat) == 'DITHERED' else 'DITHERED'
+    return 'CLIP' if _current_mode(mat) == 'HASHED' else 'HASHED'
+
+
+class DOMEMASTEREEVEE_OT_ToggleMaterialAlpha(bpy.types.Operator):
+    """Toggle one material's render method between the noisy stochastic mode
+    (Dithered/Hashed) and the noise-free sorted mode (Blended/Clip)"""
+
+    bl_idname = "domemastereevee.toggle_material_alpha"
+    bl_label = "Toggle Render Method"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    material_name: bpy.props.StringProperty()
+
+    def execute(self, context):
+        mat = bpy.data.materials.get(self.material_name)
+        if mat is None:
+            self.report({'WARNING'}, "Material not found: %s" % self.material_name)
+            return {'CANCELLED'}
+        current = _current_mode(mat)
+        new = _toggled(mat)
+        _set_mode(mat, new)
+        self.report({'INFO'}, "%s: %s -> %s" % (mat.name, current, new))
+        return {'FINISHED'}
+
+
+class DOMEMASTEREEVEE_OT_SetAllHashedToClip(bpy.types.Operator):
+    """Switch every material using the noisy stochastic mode (Dithered on
+    EEVEE Next, Hashed pre-4.2) to the noise-free sorted mode"""
+
+    bl_idname = "domemastereevee.set_all_hashed_to_clip"
+    bl_label = "All Dithered -> Blended"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        changed = []
+        for mat in bpy.data.materials:
+            if mat.users == 0:
+                continue
+            if _current_mode(mat) == _noisy_mode(mat):
+                _set_mode(mat, _toggled(mat))
+                changed.append(mat.name)
+        self.report({'INFO'}, "%d material(s) switched" % len(changed))
+        return {'FINISHED'}
+
+
+class DOMEMASTEREEVEE_OT_SetAllClipToHashed(bpy.types.Operator):
+    """Switch every material using the noise-free sorted mode (Blended on
+    EEVEE Next, Clip pre-4.2) back to the noisy stochastic mode"""
+
+    bl_idname = "domemastereevee.set_all_clip_to_hashed"
+    bl_label = "All Blended -> Dithered"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        changed = []
+        for mat in bpy.data.materials:
+            if mat.users == 0:
+                continue
+            if _current_mode(mat) != _noisy_mode(mat):
+                _set_mode(mat, _noisy_mode(mat))
+                changed.append(mat.name)
+        self.report({'INFO'}, "%d material(s) switched" % len(changed))
+        return {'FINISHED'}
+
+
 _CLASSES = (
     DOMEMASTEREEVEE_OT_MakeTestPattern,
     DOMEMASTEREEVEE_OT_MakeDomePreview,
     DOMEMASTEREEVEE_OT_MakeOrientationRig,
+    DOMEMASTEREEVEE_OT_ToggleMaterialAlpha,
+    DOMEMASTEREEVEE_OT_SetAllHashedToClip,
+    DOMEMASTEREEVEE_OT_SetAllClipToHashed,
 )
 
 

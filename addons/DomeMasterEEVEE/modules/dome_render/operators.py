@@ -180,10 +180,61 @@ class DOMEMASTEREEVEE_OT_OpenOutputFolder(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class DOMEMASTEREEVEE_OT_OptimizeSceneRendering(bpy.types.Operator):
+    """Lower render settings that cost time on every dome face without a
+    visible quality change: enable Persistent Data (avoids re-uploading
+    geometry/BVH for each of the 5 cube faces), cap render samples, disable
+    Ray Tracing, cap shadow step count, and turn off Motion Blur"""
+
+    bl_idname = "domemastereevee.optimize_scene_rendering"
+    bl_label = "Optimize Scene Rendering"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    max_samples: bpy.props.IntProperty(
+        name="Max Render Samples", default=32, min=1, max=4096,
+        description="Render samples are capped to this value if higher")
+    max_shadow_steps: bpy.props.IntProperty(
+        name="Max Shadow Steps", default=4, min=1, max=32,
+        description="Shadow step count is capped to this value if higher")
+
+    def execute(self, context):
+        scene = context.scene
+        eevee = scene.eevee
+        r = scene.render
+        changes = []
+
+        if not r.use_persistent_data:
+            r.use_persistent_data = True
+            changes.append("Persistent Data on")
+
+        if eevee.taa_render_samples > self.max_samples:
+            eevee.taa_render_samples = self.max_samples
+            changes.append("Render Samples -> %d" % self.max_samples)
+
+        if getattr(eevee, "use_raytracing", False):
+            eevee.use_raytracing = False
+            changes.append("Ray Tracing off")
+
+        if eevee.shadow_step_count > self.max_shadow_steps:
+            eevee.shadow_step_count = self.max_shadow_steps
+            changes.append("Shadow Steps -> %d" % self.max_shadow_steps)
+
+        if r.use_motion_blur:
+            r.use_motion_blur = False
+            changes.append("Motion Blur off")
+
+        if changes:
+            self.report({'INFO'}, "Optimized: " + ", ".join(changes))
+        else:
+            self.report({'INFO'}, "Already optimized - no changes made")
+        return {'FINISHED'}
+
+
 _CLASSES = (
     DOMEMASTEREEVEE_OT_RenderDomeStill,
     DOMEMASTEREEVEE_OT_RenderDomeAnimation,
     DOMEMASTEREEVEE_OT_OpenOutputFolder,
+    DOMEMASTEREEVEE_OT_OptimizeSceneRendering,
 )
 
 

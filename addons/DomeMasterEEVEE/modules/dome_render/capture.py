@@ -24,7 +24,7 @@ class RenderStateGuard:
                     "use_border", "use_crop_to_border",
                     "border_min_x", "border_max_x",
                     "border_min_y", "border_max_y")
-    _IMAGE_KEYS = ("file_format", "color_mode", "color_depth")
+    _IMAGE_KEYS = ("media_type", "file_format", "color_mode", "color_depth")
 
     def __init__(self, scene):
         self.scene = scene
@@ -35,7 +35,7 @@ class RenderStateGuard:
     def __enter__(self):
         r = self.scene.render
         self.saved_render = {k: getattr(r, k) for k in self._RENDER_KEYS}
-        self.saved_image = {k: getattr(r.image_settings, k) for k in self._IMAGE_KEYS}
+        self.saved_image = {k: getattr(r.image_settings, k, None) for k in self._IMAGE_KEYS}
         self.saved_camera = self.scene.camera
         return self
 
@@ -103,6 +103,8 @@ def render_faces(scene, depsgraph_camera, face_res, face_fov_rad, num_faces,
             r.resolution_percentage = 100
             r.use_overwrite = True
             r.use_file_extension = True
+            if hasattr(r.image_settings, "media_type"):
+                r.image_settings.media_type = 'IMAGE'
             r.image_settings.file_format = 'OPEN_EXR'
             r.image_settings.color_mode = 'RGBA'
             r.image_settings.color_depth = '32'
@@ -160,14 +162,20 @@ def write_output(scene, pixels, filepath, file_format):
         img.pixels.foreach_set(np.ascontiguousarray(pixels, dtype=np.float32).ravel())
 
         settings = scene.render.image_settings
+        has_media_type = hasattr(settings, "media_type")
         prev = (settings.file_format, settings.color_mode, settings.color_depth)
+        prev_media_type = settings.media_type if has_media_type else None
         try:
+            if has_media_type:
+                settings.media_type = 'IMAGE'
             settings.file_format = file_format
             settings.color_mode = 'RGB'
             settings.color_depth = '32' if file_format == 'OPEN_EXR' else '8'
             os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
             img.save_render(filepath, scene=scene)
         finally:
+            if has_media_type:
+                settings.media_type = prev_media_type
             (settings.file_format, settings.color_mode,
              settings.color_depth) = prev
     finally:
