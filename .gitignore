@@ -1,0 +1,30 @@
+# Ignore everything by default
+*
+!*/
+
+# Re-ignore directories we never want tracked
+.idea/
+__pycache__/
+.venv/
+venv/
+env/
+.claude/
+
+# Track only these file types
+!.gitignore
+!*.py
+!*.md
+!*.json
+!*.txt
+!*.toml
+!*.skill
+
+# Always ignore build outputs and Blender temp files
+*.zip
+*.blend
+*.blend1
+*.bak
+build_info.json
+
+# Track the addon asset library (node groups, materials, etc.)
+!essentials.blend
