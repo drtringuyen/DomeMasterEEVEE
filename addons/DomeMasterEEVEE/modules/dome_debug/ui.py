@@ -8,7 +8,7 @@ class DOMEMASTEREEVEE_PT_DomeDebug(bpy.types.Panel):
     bl_region_type = 'UI'
     bl_category = "DomeMasterEEVEE"
     bl_parent_id = "DOMEMASTEREEVEE_PT_main"
-    bl_order = 1
+    bl_order = 3
 
     def draw(self, context):
         layout = self.layout

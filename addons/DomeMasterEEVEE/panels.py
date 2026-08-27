@@ -34,18 +34,15 @@ class DOMEMASTEREEVEE_PT_Infos(bpy.types.Panel):
         layout = self.layout
         props = context.scene.domemastereevee_props
 
-        # Row 1: Build info popup + manual reload
+        # Single row: build info popup, reload, debug toggle, console, clear
         row = layout.row(align=True)
         row.operator("domemastereevee.build", text=_build_label(), icon='RESTRICT_VIEW_ON')
         row.operator("domemastereevee.reload", text="", icon='FILE_REFRESH')
-
-        # Row 2: Debug toggle + Console + Clear
-        row2 = layout.row(align=True)
-        sub = row2.row(align=True)
+        sub = row.row(align=True)
         sub.active_default = props.debug_mode
         sub.operator("domemastereevee.toggle_debug", text="", icon='INFO')
-        row2.operator("domemastereevee.toggle_console", text="", icon='CONSOLE')
-        row2.operator("domemastereevee.clear_console", text="", icon='TRASH')
+        row.operator("domemastereevee.toggle_console", text="", icon='CONSOLE')
+        row.operator("domemastereevee.clear_console", text="", icon='TRASH')
 
         if props.debug_mode:
             # Modules row — hidden unless debug mode is on
