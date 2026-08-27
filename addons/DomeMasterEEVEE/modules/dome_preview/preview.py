@@ -30,6 +30,7 @@ from gpu_extras.batch import batch_for_shader
 from mathutils import Euler, Matrix
 
 from ..dome_render import projection
+from ..dome_render.operators import CAMERA_NAME
 
 # --------------------------------------------------------------------------- #
 # Module state                                                                 #
@@ -92,7 +93,7 @@ def _base_matrix(scene, space, props):
             return None
         m = r3d.view_matrix.inverted()
     else:
-        cam = scene.camera
+        cam = bpy.data.objects.get(CAMERA_NAME) or scene.camera
         if cam is None:
             return None
         m = cam.matrix_world
@@ -406,6 +407,11 @@ def _draw():
                 inset_b = max(inset_b, r.height)
 
     placement = props.preview_placement
+    if placement == 'CAMERA_FRAME' and not props.using_dome_camera:
+        # The camera frame only lines up with the dome projection when the
+        # dome camera is actually the one being looked through. Otherwise the
+        # frame belongs to an unrelated camera, so fall back to the corner.
+        placement = 'CORNER'
     if placement == 'CAMERA_FRAME':
         rect = _camera_frame_rect(context, region)
         if rect is None:

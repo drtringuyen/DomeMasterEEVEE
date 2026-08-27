@@ -182,6 +182,33 @@ class DOMEMASTEREEVEEProperties(bpy.types.PropertyGroup):
     )
 
     # ------------------------------------------------------------------ #
+    # Dome camera switch                                                  #
+    # ------------------------------------------------------------------ #
+    using_dome_camera: BoolProperty(
+        name="Using Dome Camera",
+        description="Internal: whether Camera-DOME-Master is the active scene camera",
+        default=False,
+    )
+
+    prev_camera: PointerProperty(
+        name="Previous Camera",
+        description="Scene camera in place before switching to Camera-DOME-Master",
+        type=bpy.types.Object,
+    )
+
+    prev_resolution_x: IntProperty(
+        name="Previous Resolution X",
+        description="Render resolution X in place before switching to Camera-DOME-Master",
+        default=1920,
+    )
+
+    prev_resolution_y: IntProperty(
+        name="Previous Resolution Y",
+        description="Render resolution Y in place before switching to Camera-DOME-Master",
+        default=1080,
+    )
+
+    # ------------------------------------------------------------------ #
     # Output                                                              #
     # ------------------------------------------------------------------ #
     output_dir: StringProperty(

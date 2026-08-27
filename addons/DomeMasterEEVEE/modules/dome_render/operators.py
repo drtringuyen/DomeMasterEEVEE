@@ -184,6 +184,14 @@ class DOMEMASTEREEVEE_OT_OpenOutputFolder(bpy.types.Operator):
 CAMERA_NAME = "Camera-DOME-Master"
 
 
+def _remember_original_camera(props, scene):
+    """Snapshot the camera/resolution in place before switching to the dome camera."""
+    r = scene.render
+    props.prev_camera = scene.camera
+    props.prev_resolution_x = r.resolution_x
+    props.prev_resolution_y = r.resolution_y
+
+
 class DOMEMASTEREEVEE_OT_OptimizeSceneRendering(bpy.types.Operator):
     """Create the dome master camera (from the selected camera's position,
     or the 3D cursor if none is selected), point it straight up, make it the
@@ -221,6 +229,14 @@ class DOMEMASTEREEVEE_OT_OptimizeSceneRendering(bpy.types.Operator):
         else:
             position = scene.cursor.location.copy()
 
+        main_cam = scene.camera
+        target_collections = list(main_cam.users_collection) if main_cam is not None else []
+        if not target_collections:
+            target_collections = [context.collection]
+
+        if scene.camera is None or scene.camera.name != CAMERA_NAME:
+            _remember_original_camera(props, scene)
+
         existing = bpy.data.objects.get(CAMERA_NAME)
         if existing is not None:
             old_data = existing.data
@@ -236,9 +252,11 @@ class DOMEMASTEREEVEE_OT_OptimizeSceneRendering(bpy.types.Operator):
         cam_obj = bpy.data.objects.new(CAMERA_NAME, cam_data)
         cam_obj.location = position
         cam_obj.rotation_euler = (math.pi, 0.0, 0.0)
-        context.collection.objects.link(cam_obj)
+        for coll in target_collections:
+            coll.objects.link(cam_obj)
 
         scene.camera = cam_obj
+        props.using_dome_camera = True
         changes.append("Created '%s' (ortho, size 6, facing up)" % CAMERA_NAME)
 
         if r.resolution_x != props.output_resolution or r.resolution_y != props.output_resolution:
@@ -274,11 +292,57 @@ class DOMEMASTEREEVEE_OT_OptimizeSceneRendering(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class DOMEMASTEREEVEE_OT_SwitchCamera(bpy.types.Operator):
+    """Toggle the scene camera and render resolution between the dome master
+    camera and whatever camera/resolution was active before it"""
+
+    bl_idname = "domemastereevee.switch_camera"
+    bl_label = "Switch Camera"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        props = _props(context)
+        return props.using_dome_camera or bpy.data.objects.get(CAMERA_NAME) is not None
+
+    def execute(self, context):
+        scene = context.scene
+        props = _props(context)
+        r = scene.render
+
+        if props.using_dome_camera:
+            scene.camera = props.prev_camera
+            r.resolution_x = props.prev_resolution_x
+            r.resolution_y = props.prev_resolution_y
+            props.using_dome_camera = False
+            self.report({'INFO'}, "Switched to previous camera (%s, %dx%d)" % (
+                props.prev_camera.name if props.prev_camera else "None",
+                r.resolution_x, r.resolution_y))
+        else:
+            dome_cam = bpy.data.objects.get(CAMERA_NAME)
+            if dome_cam is None:
+                self.report({'ERROR'}, "No dome camera yet - run Setup Camera & Optimize Scene first")
+                return {'CANCELLED'}
+
+            if scene.camera is not dome_cam:
+                _remember_original_camera(props, scene)
+
+            scene.camera = dome_cam
+            r.resolution_x = props.output_resolution
+            r.resolution_y = props.output_resolution
+            props.using_dome_camera = True
+            self.report({'INFO'}, "Switched to %s (%dx%d)" % (
+                CAMERA_NAME, r.resolution_x, r.resolution_y))
+
+        return {'FINISHED'}
+
+
 _CLASSES = (
     DOMEMASTEREEVEE_OT_RenderDomeStill,
     DOMEMASTEREEVEE_OT_RenderDomeAnimation,
     DOMEMASTEREEVEE_OT_OpenOutputFolder,
     DOMEMASTEREEVEE_OT_OptimizeSceneRendering,
+    DOMEMASTEREEVEE_OT_SwitchCamera,
 )
 
 

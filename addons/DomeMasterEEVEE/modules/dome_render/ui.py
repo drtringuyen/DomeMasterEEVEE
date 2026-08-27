@@ -89,6 +89,12 @@ class DOMEMASTEREEVEE_PT_DomeRender(bpy.types.Panel):
         row.operator("domemastereevee.optimize_scene_rendering",
                      icon='CAMERA_DATA')
 
+        row = box1.row(align=True)
+        switch_text = ("Switch to Original Camera" if props.using_dome_camera
+                       else "Switch to Dome Camera")
+        row.operator("domemastereevee.switch_camera",
+                     text=switch_text, icon='ARROW_LEFTRIGHT')
+
         box2 = layout.box()
         split = box2.split(factor=0.8, align=True)
         split.prop(props, "output_dir")
