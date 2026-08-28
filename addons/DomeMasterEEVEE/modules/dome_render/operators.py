@@ -285,11 +285,15 @@ def _find_tagged_object(scene, tag):
     return None
 
 
-def _link_and_override_rig(context):
-    """Link the bundled camera-rig collection and create a fully editable
-    local override of it. Returns the override CameraRig armature object.
-    No-op (just returns the existing one) if a rig is already present,
-    linked or overridden, from an earlier run."""
+def _append_rig(context):
+    """Append (not link) the bundled camera-rig collection, so the
+    director's file gets its own independent copy with no dependency on
+    camera_rig.blend ever again -- a linked library override still needs
+    the source file reachable to resync, and that file lives inside each
+    artist's local addon install (a per-machine path), which breaks the
+    moment the .blend is opened on a different computer. Returns the
+    appended CameraRig armature object. No-op (just returns the existing
+    one) if a rig is already present from an earlier run."""
     existing = _find_tagged_object(context.scene, RIG_TAG)
     if existing is not None:
         return existing, False
@@ -298,33 +302,23 @@ def _link_and_override_rig(context):
     if not os.path.isfile(asset_path):
         raise RuntimeError("Camera rig asset missing: %s" % asset_path)
 
-    with bpy.data.libraries.load(asset_path, link=True) as (data_from, data_to):
+    with bpy.data.libraries.load(asset_path, link=False) as (data_from, data_to):
         if RIG_COLLECTION_NAME not in data_from.collections:
             raise RuntimeError(
                 "'%s' not found in %s" % (RIG_COLLECTION_NAME, asset_path))
         data_to.collections = [RIG_COLLECTION_NAME]
 
-    linked_coll = data_to.collections[0]
-    context.scene.collection.children.link(linked_coll)
-
-    override_coll = linked_coll.override_hierarchy_create(
-        context.scene, context.view_layer, do_fully_editable=True)
-
-    # override_hierarchy_create() leaves the original linked collection in
-    # the scene alongside the new override -- without this the director's
-    # file ends up with both the read-only linked rig and the editable
-    # override rig visible/selectable at once.
-    if linked_coll.name in context.scene.collection.children:
-        context.scene.collection.children.unlink(linked_coll)
+    appended_coll = data_to.collections[0]
+    context.scene.collection.children.link(appended_coll)
 
     cam_rig = None
-    for obj in override_coll.objects:
+    for obj in appended_coll.objects:
         if obj.get(RIG_TAG):
             cam_rig = obj
             break
     if cam_rig is None:
         raise RuntimeError(
-            "Linked rig is missing the '%s' tag on its armature" % RIG_TAG)
+            "Appended rig is missing the '%s' tag on its armature" % RIG_TAG)
     return cam_rig, True
 
 
@@ -348,7 +342,7 @@ def _retarget_rig(cam_rig, director_cam):
 
 
 class DOMEMASTEREEVEE_OT_OptimizeSceneRendering(bpy.types.Operator):
-    """Link the Dome Camera Rig asset (creating a library override on first
+    """Append the Dome Camera Rig asset as a private local copy (on first
     run, or reusing one already in the file), point its Copy Transforms
     constraints at the selected camera so CAM-Dome tracks it, set CAM-Dome as
     the Dome Camera, and then apply the usual render-time optimizations:
@@ -394,7 +388,7 @@ class DOMEMASTEREEVEE_OT_OptimizeSceneRendering(bpy.types.Operator):
             return {'CANCELLED'}
 
         try:
-            cam_rig, created = _link_and_override_rig(context)
+            cam_rig, created = _append_rig(context)
             _retarget_rig(cam_rig, director_cam)
         except RuntimeError as exc:
             self.report({'ERROR'}, str(exc))
@@ -402,13 +396,13 @@ class DOMEMASTEREEVEE_OT_OptimizeSceneRendering(bpy.types.Operator):
 
         cam_dome = _find_tagged_object(scene, DOME_CAMERA_TAG)
         if cam_dome is None:
-            self.report({'ERROR'}, "Linked rig is missing its CAM-Dome camera")
+            self.report({'ERROR'}, "Appended rig is missing its CAM-Dome camera")
             return {'CANCELLED'}
 
         props.dome_camera = cam_dome
         changes.append(
             "%s dome rig, retargeted to '%s'"
-            % ("Linked" if created else "Reused", director_cam.name))
+            % ("Appended" if created else "Reused", director_cam.name))
 
         for obj in context.selected_objects:
             obj.select_set(False)
