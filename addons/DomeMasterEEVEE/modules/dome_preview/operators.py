@@ -3,17 +3,23 @@ import bpy
 from . import preview
 
 
-class DOMEMASTEREEVEE_OT_TogglePreview(bpy.types.Operator):
-    """Turn the live dome preview on or off"""
+class DOMEMASTEREEVEE_OT_ToggleViewportPreview(bpy.types.Operator):
+    """Turn the live dome preview on or off for this viewport only"""
 
-    bl_idname = "domemastereevee.toggle_preview"
+    bl_idname = "domemastereevee.toggle_viewport_preview"
     bl_label = "Live Dome Preview"
 
     def execute(self, context):
-        props = context.scene.domemastereevee_props
-        props.preview_enabled = not props.preview_enabled   # update() starts/stops
-        self.report({'INFO'}, "Dome preview %s"
-                    % ("on" if props.preview_enabled else "off"))
+        area = context.area
+        if area is None or area.type != 'VIEW_3D':
+            self.report({'WARNING'}, "Not run from a 3D viewport")
+            return {'CANCELLED'}
+        if preview.is_active_for_area(area):
+            preview.disable_for_area(area)
+            self.report({'INFO'}, "Dome preview off in this viewport")
+        else:
+            preview.enable_for_area(area)
+            self.report({'INFO'}, "Dome preview on in this viewport")
         return {'FINISHED'}
 
 
@@ -29,7 +35,7 @@ class DOMEMASTEREEVEE_OT_RefreshPreview(bpy.types.Operator):
 
 
 _CLASSES = (
-    DOMEMASTEREEVEE_OT_TogglePreview,
+    DOMEMASTEREEVEE_OT_ToggleViewportPreview,
     DOMEMASTEREEVEE_OT_RefreshPreview,
 )
 

@@ -102,7 +102,9 @@ class DOMEMASTEREEVEE_PT_DomeRender(bpy.types.Panel):
 
         col = box2.column(align=True)
         col.scale_y = 1.3
-        col.operator("domemastereevee.render_dome_still", icon='RENDER_STILL')
+        row = col.row(align=True)
+        row.operator("domemastereevee.render_dome_still", icon='RENDER_STILL')
+        row.operator("domemastereevee.render_dome_markers", text="", icon='MARKER_HLT')
         row = col.row(align=True)
         row.operator("domemastereevee.render_dome_animation", icon='RENDER_ANIMATION')
         row.operator("domemastereevee.open_output_folder", text="", icon='FILE_FOLDER')

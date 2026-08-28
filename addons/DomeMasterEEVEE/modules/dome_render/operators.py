@@ -42,6 +42,29 @@ def _face_resolution(props, plan=None):
     return max(64, min(res, limit))
 
 
+def _ensure_dome_camera(context):
+    """Force the dome camera active for a render, regardless of what the
+    scene camera currently is. Returns (prev_camera, dome_camera) so the
+    caller can restore the original camera afterwards."""
+    scene = context.scene
+    dome_cam = _props(context).dome_camera
+    if dome_cam is None:
+        raise RuntimeError(
+            "No Dome Camera selected - pick one in the Live Preview panel")
+    prev_cam = scene.camera
+    if prev_cam is not dome_cam:
+        scene.camera = dome_cam
+    return prev_cam, dome_cam
+
+
+def _restore_camera(context, prev_cam, dome_cam):
+    if dome_cam is None:
+        return
+    scene = context.scene
+    if prev_cam is not dome_cam and scene.camera is dome_cam:
+        scene.camera = prev_cam
+
+
 def _render_one_frame(context, frame, workdir):
     scene = context.scene
     props = _props(context)
@@ -101,7 +124,8 @@ class DOMEMASTEREEVEE_OT_RenderDomeStill(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return context.scene is not None and context.scene.camera is not None
+        return (context.scene is not None
+                and _props(context).dome_camera is not None)
 
     def execute(self, context):
         props = _props(context)
@@ -109,7 +133,9 @@ class DOMEMASTEREEVEE_OT_RenderDomeStill(bpy.types.Operator):
         start_frame = scene.frame_current
         workdir = capture.make_workdir()
         t0 = time.time()
+        prev_cam = dome_cam = None
         try:
+            prev_cam, dome_cam = _ensure_dome_camera(context)
             out, backend, face_res, num_faces, kind = _render_one_frame(
                 context, scene.frame_current, workdir)
         except Exception as exc:      # noqa: BLE001 - surface any failure to the UI
@@ -118,6 +144,7 @@ class DOMEMASTEREEVEE_OT_RenderDomeStill(bpy.types.Operator):
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
             scene.frame_set(start_frame)
+            _restore_camera(context, prev_cam, dome_cam)
 
         dt = time.time() - t0
         half = ", half faces" if projection.half_applicable(
@@ -139,7 +166,8 @@ class DOMEMASTEREEVEE_OT_RenderDomeAnimation(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return context.scene is not None and context.scene.camera is not None
+        return (context.scene is not None
+                and _props(context).dome_camera is not None)
 
     def execute(self, context):
         scene = context.scene
@@ -149,7 +177,9 @@ class DOMEMASTEREEVEE_OT_RenderDomeAnimation(bpy.types.Operator):
         frames = range(scene.frame_start, scene.frame_end + 1, scene.frame_step)
         t0 = time.time()
         done = 0
+        prev_cam = dome_cam = None
         try:
+            prev_cam, dome_cam = _ensure_dome_camera(context)
             for frame in frames:
                 _render_one_frame(context, frame, workdir)
                 done += 1
@@ -159,10 +189,56 @@ class DOMEMASTEREEVEE_OT_RenderDomeAnimation(bpy.types.Operator):
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
             scene.frame_set(start_frame)
+            _restore_camera(context, prev_cam, dome_cam)
 
         dt = time.time() - t0
         props.last_render_info = "%d frames in %.1fs" % (done, dt)
         self.report({'INFO'}, "Domemaster sequence: %s" % props.last_render_info)
+        return {'FINISHED'}
+
+
+class DOMEMASTEREEVEE_OT_RenderDomeMarkers(bpy.types.Operator):
+    """Render only the frames that have a timeline marker"""
+
+    bl_idname = "domemastereevee.render_dome_markers"
+    bl_label = "Render Domemaster Markers"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        return (context.scene is not None
+                and _props(context).dome_camera is not None
+                and len(context.scene.timeline_markers) > 0)
+
+    def execute(self, context):
+        scene = context.scene
+        props = _props(context)
+        start_frame = scene.frame_current
+        frames = sorted({m.frame for m in scene.timeline_markers})
+        if not frames:
+            self.report({'WARNING'}, "No timeline markers found")
+            return {'CANCELLED'}
+
+        workdir = capture.make_workdir()
+        t0 = time.time()
+        done = 0
+        prev_cam = dome_cam = None
+        try:
+            prev_cam, dome_cam = _ensure_dome_camera(context)
+            for frame in frames:
+                _render_one_frame(context, frame, workdir)
+                done += 1
+        except Exception as exc:      # noqa: BLE001
+            self.report({'ERROR'}, "Stopped after %d marker frame(s): %s" % (done, exc))
+            return {'CANCELLED'}
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+            scene.frame_set(start_frame)
+            _restore_camera(context, prev_cam, dome_cam)
+
+        dt = time.time() - t0
+        props.last_render_info = "%d marker frames in %.1fs" % (done, dt)
+        self.report({'INFO'}, "Domemaster markers: %s" % props.last_render_info)
         return {'FINISHED'}
 
 
@@ -256,6 +332,7 @@ class DOMEMASTEREEVEE_OT_OptimizeSceneRendering(bpy.types.Operator):
             coll.objects.link(cam_obj)
 
         scene.camera = cam_obj
+        props.dome_camera = cam_obj
         props.using_dome_camera = True
         changes.append("Created '%s' (ortho, size 6, facing up)" % CAMERA_NAME)
 
@@ -303,7 +380,7 @@ class DOMEMASTEREEVEE_OT_SwitchCamera(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         props = _props(context)
-        return props.using_dome_camera or bpy.data.objects.get(CAMERA_NAME) is not None
+        return props.using_dome_camera or props.dome_camera is not None
 
     def execute(self, context):
         scene = context.scene
@@ -319,9 +396,9 @@ class DOMEMASTEREEVEE_OT_SwitchCamera(bpy.types.Operator):
                 props.prev_camera.name if props.prev_camera else "None",
                 r.resolution_x, r.resolution_y))
         else:
-            dome_cam = bpy.data.objects.get(CAMERA_NAME)
+            dome_cam = props.dome_camera
             if dome_cam is None:
-                self.report({'ERROR'}, "No dome camera yet - run Setup Camera & Optimize Scene first")
+                self.report({'ERROR'}, "No Dome Camera selected - pick one in the Live Preview panel")
                 return {'CANCELLED'}
 
             if scene.camera is not dome_cam:
@@ -332,7 +409,7 @@ class DOMEMASTEREEVEE_OT_SwitchCamera(bpy.types.Operator):
             r.resolution_y = props.output_resolution
             props.using_dome_camera = True
             self.report({'INFO'}, "Switched to %s (%dx%d)" % (
-                CAMERA_NAME, r.resolution_x, r.resolution_y))
+                dome_cam.name, r.resolution_x, r.resolution_y))
 
         return {'FINISHED'}
 
@@ -340,6 +417,7 @@ class DOMEMASTEREEVEE_OT_SwitchCamera(bpy.types.Operator):
 _CLASSES = (
     DOMEMASTEREEVEE_OT_RenderDomeStill,
     DOMEMASTEREEVEE_OT_RenderDomeAnimation,
+    DOMEMASTEREEVEE_OT_RenderDomeMarkers,
     DOMEMASTEREEVEE_OT_OpenOutputFolder,
     DOMEMASTEREEVEE_OT_OptimizeSceneRendering,
     DOMEMASTEREEVEE_OT_SwitchCamera,

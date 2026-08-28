@@ -13,37 +13,45 @@ class DOMEMASTEREEVEE_PT_DomePreview(bpy.types.Panel):
     bl_order = 1
 
     def draw_header(self, context):
-        self.layout.prop(context.scene.domemastereevee_props,
-                         "preview_enabled", text="")
+        enabled = preview.is_active_for_area(context.area)
+        self.layout.operator(
+            "domemastereevee.toggle_viewport_preview", text="",
+            icon='CHECKBOX_HLT' if enabled else 'CHECKBOX_DEHLT',
+            emboss=False, depress=enabled)
 
     def draw(self, context):
         layout = self.layout
         scene = context.scene
         props = scene.domemastereevee_props
+        space_enabled = preview.is_active_for_area(context.area)
 
         col = layout.column()
-        col.active = props.preview_enabled
+        col.active = space_enabled
 
-        if props.preview_source == 'CAMERA' and scene.camera is None:
+        hint = col.row()
+        hint.enabled = False
+        hint.label(text="On/off is per viewport. Settings below are global.",
+                   icon='INFO')
+
+        if props.dome_camera is None:
             box = col.box()
             box.alert = True
-            box.label(text="No active scene camera", icon='ERROR')
+            box.label(text="No Dome Camera selected", icon='ERROR')
 
-        col.prop(props, "preview_source")
+        col.prop(props, "dome_camera")
         col.prop(props, "preview_placement")
 
-        if props.preview_placement == 'CAMERA_FRAME':
-            r3d = getattr(context, "region_data", None)
-            if r3d is not None and r3d.view_perspective != 'CAMERA':
-                hint = col.row()
-                hint.enabled = False
-                hint.label(text="Not in camera view - showing corner",
-                           icon='INFO')
+        r3d = getattr(context.space_data, "region_3d", None)
+        in_camera_view = r3d is not None and r3d.view_perspective == 'CAMERA'
+
+        if props.preview_placement == 'CAMERA_FRAME' and not in_camera_view:
+            hint = col.row()
+            hint.enabled = False
+            hint.label(text="Not in camera view - showing corner",
+                       icon='INFO')
         if props.preview_placement == 'CORNER' or (
-                props.preview_placement == 'CAMERA_FRAME'
-                and getattr(context, "region_data", None) is not None
-                and context.region_data.view_perspective != 'CAMERA'):
-            col.prop(props, "preview_corner")
+                props.preview_placement == 'CAMERA_FRAME' and not in_camera_view):
+            col.prop(props, "preview_vertical_pos", slider=True)
             col.prop(props, "preview_corner_scale")
 
         sub = col.column(align=True)
@@ -73,7 +81,7 @@ class DOMEMASTEREEVEE_PT_DomePreview(bpy.types.Panel):
 
         col.operator("domemastereevee.refresh_preview", icon='FILE_REFRESH')
 
-        if props.debug_mode and props.preview_enabled and props.preview_info:
+        if props.debug_mode and space_enabled and props.preview_info:
             row = col.row()
             row.enabled = False
             row.label(text=props.preview_info, text_ctxt="extra-info-label")

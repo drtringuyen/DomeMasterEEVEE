@@ -9,18 +9,6 @@ from bpy.props import (
 )
 
 
-def _preview_toggled(self, context):
-    """Start or stop the live preview when the checkbox changes."""
-    try:
-        from .modules.dome_preview import preview
-    except Exception:
-        return
-    if self.preview_enabled:
-        preview.start()
-    else:
-        preview.stop()
-
-
 class DOMEMASTEREEVEEProperties(bpy.types.PropertyGroup):
     """Global properties shared across all modules"""
 
@@ -333,17 +321,12 @@ class DOMEMASTEREEVEEProperties(bpy.types.PropertyGroup):
 
     # ------------------------------------------------------------------ #
     # Live preview                                                        #
+    #                                                                      #
+    # Whether the preview is drawn is a per-viewport setting -- see        #
+    # SpaceView3D.domemastereevee_preview_enabled in dome_preview.preview  #
+    # -- so every property below is a *global* setting shared by every     #
+    # viewport that has the preview turned on, and none of them live here. #
     # ------------------------------------------------------------------ #
-    preview_enabled: BoolProperty(
-        name="Live Dome Preview",
-        description=(
-            "Draw the fisheye dome over the 3D viewport, updated live. "
-            "This is viewport quality, not final render quality"
-        ),
-        default=False,
-        update=lambda self, ctx: _preview_toggled(self, ctx),
-    )
-
     preview_resolution: IntProperty(
         name="Preview Resolution",
         description=(
@@ -394,17 +377,16 @@ class DOMEMASTEREEVEEProperties(bpy.types.PropertyGroup):
         precision=2,
     )
 
-    preview_source: EnumProperty(
-        name="Follow",
-        description="What the preview looks through",
-        items=[
-            ('CAMERA', "Scene Camera",
-             "Preview from the active scene camera. What you will render"),
-            ('VIEWPORT', "Viewport View",
-             "Preview from the current viewport view, so navigating the "
-             "viewport flies the dome"),
-        ],
-        default='CAMERA',
+    dome_camera: PointerProperty(
+        name="Dome Camera",
+        description=(
+            "Camera the dome looks out from. Drives both the Live Preview and "
+            "the Render Domemaster / Markers / Sequence operators -- there is "
+            "one dome camera for the whole addon, not a separate choice per "
+            "feature"
+        ),
+        type=bpy.types.Object,
+        poll=lambda self, obj: obj.type == 'CAMERA',
     )
 
     preview_placement: EnumProperty(
@@ -421,19 +403,17 @@ class DOMEMASTEREEVEEProperties(bpy.types.PropertyGroup):
         default='CAMERA_FRAME',
     )
 
-    preview_corner: EnumProperty(
-        name="Corner",
+    preview_vertical_pos: FloatProperty(
+        name="Vertical Position",
         description=(
-            "Which corner the picture-in-picture sits in. The preview is inset "
-            "to clear the toolbar and side panel automatically"
+            "Slide the picture-in-picture preview up or down along the left "
+            "edge, 0 is top and 1 is bottom. The preview is inset to clear "
+            "the toolbar, header and side panel automatically"
         ),
-        items=[
-            ('BOTTOM_LEFT', "Bottom Left", ""),
-            ('BOTTOM_RIGHT', "Bottom Right", ""),
-            ('TOP_LEFT', "Top Left", ""),
-            ('TOP_RIGHT', "Top Right", ""),
-        ],
-        default='BOTTOM_LEFT',
+        subtype='FACTOR',
+        default=0.0,
+        min=0.0,
+        max=1.0,
     )
 
 

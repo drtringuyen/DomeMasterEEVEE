@@ -19,6 +19,17 @@ the final blit touches the screen.
 
 Unlike the render operator this is *viewport* quality -- viewport sampling, no
 final-render passes, no compositor.
+
+On/off is per viewport, everything else is global: whether the preview is
+drawn is tracked per VIEW_3D area (see _active_area_ptrs below -- SpaceView3D
+itself cannot hold custom properties in Blender 5.x, hence tracking by area
+rather than a property the panel could bind to directly), while the camera,
+shading override, resolution, etc. all live on the scene property group and
+apply to every active viewport identically. Regardless of how many viewports
+are active, only one render happens per tick -- _find_view3d() picks any one
+of them to drive draw_view3d(), and the shared result texture is then blitted
+into every active viewport's own region by its own draw handler call. Nothing
+scales with viewport count except the (cheap) blit.
 """
 
 import math
@@ -30,7 +41,6 @@ from gpu_extras.batch import batch_for_shader
 from mathutils import Euler, Matrix
 
 from ..dome_render import projection
-from ..dome_render.operators import CAMERA_NAME
 
 # --------------------------------------------------------------------------- #
 # Module state                                                                 #
@@ -47,6 +57,22 @@ _last_ms = 0.0
 _dep_counter = 0
 _rendering = False
 
+# Which viewports currently have the preview turned on, by VIEW_3D area
+# as_pointer(). This is the single on/off switch -- there is no scene-level
+# "preview enabled" anymore, so a viewport is on if and only if its area's
+# pointer is a member here. Tracked by area rather than space or region:
+# SpaceView3D and Screen-embedded structs don't support custom properties or
+# dynamic RNA property registration in Blender 5.x ("id properties not
+# supported for this type"), so this can only be plain runtime Python state --
+# it does not survive a file reload or an addon reload, same as the pin-to-
+# -viewport mechanic this replaces.
+#
+# The render itself still happens once per tick regardless of how many
+# viewports are active: _find_view3d() below picks one of them as the render
+# source, and every active viewport's own draw handler call then blits that
+# same shared result texture -- see _draw().
+_active_area_ptrs = set()
+
 
 def is_running():
     return _handle is not None
@@ -56,11 +82,55 @@ def last_ms():
     return _last_ms
 
 
+def is_active_for_area(area):
+    return area is not None and area.as_pointer() in _active_area_ptrs
+
+
+def enable_for_area(area):
+    _active_area_ptrs.add(area.as_pointer())
+    invalidate()
+    start()
+    _tag_redraw()
+
+
+def disable_for_area(area):
+    _active_area_ptrs.discard(area.as_pointer())
+    _tag_redraw()
+    if not _active_area_ptrs:
+        stop()
+
+
+def _prune_active_areas():
+    """Drop pointers for viewports that no longer exist (area closed, etc).
+
+    as_pointer() identity is only meaningful while the underlying struct is
+    alive, and addresses can be reused, so this is called once per tick
+    rather than trusted to stay valid indefinitely.
+    """
+    live = set()
+    for win in bpy.context.window_manager.windows:
+        screen = win.screen
+        if screen is None:
+            continue
+        for area in screen.areas:
+            if area.type == 'VIEW_3D':
+                live.add(area.as_pointer())
+    stale = _active_area_ptrs - live
+    if stale:
+        _active_area_ptrs.difference_update(stale)
+
+
 # --------------------------------------------------------------------------- #
 # Helpers                                                                      #
 # --------------------------------------------------------------------------- #
 def _find_view3d():
-    """First 3D viewport across all windows: (window, area, space, region)."""
+    """Pick one active viewport to render through: (window, area, space, region).
+
+    Only one render happens per tick no matter how many viewports have the
+    preview on -- this just needs *a* valid VIEW_3D to drive draw_view3d()
+    with. The result texture it produces is shared; every active viewport's
+    draw handler blits the same texture independently in _draw().
+    """
     wm = bpy.context.window_manager
     for win in wm.windows:
         screen = win.screen
@@ -69,9 +139,12 @@ def _find_view3d():
         for area in screen.areas:
             if area.type != 'VIEW_3D':
                 continue
+            if area.as_pointer() not in _active_area_ptrs:
+                continue
+            space = area.spaces.active
             for region in area.regions:
                 if region.type == 'WINDOW':
-                    return win, area, area.spaces.active, region
+                    return win, area, space, region
     return None, None, None, None
 
 
@@ -85,18 +158,12 @@ def _tag_redraw():
                 area.tag_redraw()
 
 
-def _base_matrix(scene, space, props):
+def _base_matrix(props):
     """Rotation+translation the dome looks out from. Scale is stripped."""
-    if props.preview_source == 'VIEWPORT':
-        r3d = getattr(space, "region_3d", None)
-        if r3d is None:
-            return None
-        m = r3d.view_matrix.inverted()
-    else:
-        cam = bpy.data.objects.get(CAMERA_NAME) or scene.camera
-        if cam is None:
-            return None
-        m = cam.matrix_world
+    cam = props.dome_camera
+    if cam is None:
+        return None
+    m = cam.matrix_world
     loc, rot, _scale = m.decompose()
     return Matrix.Translation(loc) @ rot.to_matrix().to_4x4()
 
@@ -183,7 +250,7 @@ def _free_faces():
 
 
 def _free():
-    global _result_off, _result_res, _remap_shader, _last_sig
+    global _result_off, _result_res, _remap_shader, _blit_shader, _last_sig
     _free_faces()
     if _result_off is not None:
         try:
@@ -193,6 +260,7 @@ def _free():
     _result_off = None
     _result_res = 0
     _remap_shader = None
+    _blit_shader = None
     _last_sig = None
 
 
@@ -203,7 +271,7 @@ def _signature(scene, props, base, out_res, face_res):
         round(props.image_rotation, 4), round(props.dome_tilt, 4),
         bool(props.flip_horizontal), bool(props.debug_stretch),
         round(props.allowed_undersampling, 4), round(props.allowed_perfect_range, 5),
-        out_res, face_res, props.preview_source, props.preview_shading,
+        out_res, face_res, props.dome_camera.name, props.preview_shading,
         props.face_mode, scene.frame_current, _dep_counter,
     )
 
@@ -224,7 +292,7 @@ def _render():
 
     scene = win.scene
     props = scene.domemastereevee_props
-    base = _base_matrix(scene, space, props)
+    base = _base_matrix(props)
     if base is None:
         return False
 
@@ -355,21 +423,75 @@ def _camera_frame_rect(context, region):
     return x0, y0, x1, y1
 
 
-def _blit(x0, y0, x1, y1):
+_CIRCLE_VERT_SOURCE = """
+void main()
+{
+    uv = texCoord;
+    gl_Position = vec4(pos, 0.0, 1.0);
+}
+"""
+
+_CIRCLE_FRAG_SOURCE = """
+void main()
+{
+    vec2 d = uv - vec2(0.5, 0.5);
+    if (dot(d, d) > 0.25) {
+        discard;
+    }
+    fragColor = texture(image, uv);
+}
+"""
+
+
+def _build_circle_shader():
+    """Compile the circular-mask blit shader via GPUShaderCreateInfo.
+
+    Blender 5.x removed direct GPUShader(vertexcode, fragcode) construction --
+    "cannot create 'GPUShader' instances" -- so this goes through
+    GPUShaderCreateInfo, matching dome_render.projection.build_shader().
+    """
+    iface = gpu.types.GPUStageInterfaceInfo("dme_circle_iface")
+    iface.smooth('VEC2', "uv")
+
+    info = gpu.types.GPUShaderCreateInfo()
+    info.vertex_in(0, 'VEC2', "pos")
+    info.vertex_in(1, 'VEC2', "texCoord")
+    info.vertex_out(iface)
+    info.fragment_out(0, 'VEC4', "fragColor")
+    info.sampler(0, 'FLOAT_2D', "image")
+    info.vertex_source(_CIRCLE_VERT_SOURCE)
+    info.fragment_source(_CIRCLE_FRAG_SOURCE)
+    return gpu.shader.create_from_info(info)
+
+
+def _blit(x0, y0, x1, y1, region_w, region_h, circular=True):
+    """Blit the result texture into the pixel rect, masked to a circle.
+
+    Positions are emitted directly in clip space, bypassing the GPU matrix
+    stack, since POST_PIXEL draw handlers do not guarantee an MVP uniform is
+    bound for a hand-written shader.
+    """
     global _blit_shader
-    if _blit_shader is None:
-        _blit_shader = gpu.shader.from_builtin('IMAGE')
+    if circular:
+        if _blit_shader is None:
+            _blit_shader = _build_circle_shader()
+        shader = _blit_shader
+    else:
+        shader = gpu.shader.from_builtin('IMAGE')
+
+    def ndc(px, py):
+        return (px / region_w * 2.0 - 1.0, py / region_h * 2.0 - 1.0)
 
     gpu.state.blend_set('NONE')
     gpu.state.depth_test_set('NONE')
     try:
-        _blit_shader.bind()
-        _blit_shader.uniform_sampler("image", _result_off.texture_color)
+        shader.bind()
+        shader.uniform_sampler("image", _result_off.texture_color)
         batch_for_shader(
-            _blit_shader, 'TRI_FAN',
-            {"pos": ((x0, y0), (x1, y0), (x1, y1), (x0, y1)),
+            shader, 'TRI_FAN',
+            {"pos": (ndc(x0, y0), ndc(x1, y0), ndc(x1, y1), ndc(x0, y1)),
              "texCoord": ((0, 0), (1, 0), (1, 1), (0, 1))},
-        ).draw(_blit_shader)
+        ).draw(shader)
     finally:
         gpu.state.blend_set('NONE')
 
@@ -378,9 +500,15 @@ def _draw():
     if _result_off is None:
         return
     context = bpy.context
+
+    # This same draw handler fires once per open VIEW_3D WINDOW region --
+    # only blit into the ones the user turned the preview on for.
+    if not is_active_for_area(context.area):
+        return
+
     scene = context.scene
     props = getattr(scene, "domemastereevee_props", None)
-    if props is None or not props.preview_enabled:
+    if props is None:
         return
     region = context.region
     if region is None:
@@ -421,7 +549,7 @@ def _draw():
             size = min(fx1 - fx0, fy1 - fy0)
             x0 = fx0 + (fx1 - fx0 - size) * 0.5
             y0 = fy0 + (fy1 - fy0 - size) * 0.5
-            _blit(x0, y0, x0 + size, y0 + size)
+            _blit(x0, y0, x0 + size, y0 + size, w, h)
             return
 
     if placement == 'FULL':
@@ -432,33 +560,37 @@ def _draw():
         avail_h = max(64, h - inset_t - inset_b)
         size = max(64, int(min(avail_w, avail_h) * props.preview_corner_scale))
         margin = 16
-        corner = props.preview_corner
-        if 'LEFT' in corner:
-            x0 = inset_l + margin
-        else:
-            x0 = w - inset_r - size - margin
-        if 'BOTTOM' in corner:
-            y0 = inset_b + margin
-        else:
-            y0 = h - inset_t - size - margin
-    _blit(x0, y0, x0 + size, y0 + size)
+        # Pivot is fixed to the left edge; only the vertical position slides,
+        # lerped from the top of the usable area down to the bottom.
+        x0 = inset_l + margin
+        y_top = h - inset_t - size - margin
+        y_bottom = inset_b + margin
+        t = props.preview_vertical_pos
+        y0 = y_top + (y_bottom - y_top) * t
+    _blit(x0, y0, x0 + size, y0 + size, w, h)
 
 
 # --------------------------------------------------------------------------- #
 # Timer + handlers                                                             #
 # --------------------------------------------------------------------------- #
 def _tick():
+    _prune_active_areas()
+    if not _active_area_ptrs:
+        # stop() rather than a bare unregister -- it also tears down the draw
+        # handler and frees the GPU offscreens, which a plain return-None
+        # timer-unregister would leak.
+        stop()
+        return None
     scene = bpy.context.scene
     props = getattr(scene, "domemastereevee_props", None)
-    if props is None or not props.preview_enabled:
-        return None                      # unregister
+    fps = props.preview_fps if props is not None else 12
     try:
         if _render():
             _tag_redraw()
     except Exception as exc:             # noqa: BLE001 - never kill the timer
         print("[DomeMasterEEVEE] preview error: %s: %s" % (type(exc).__name__, exc))
         return 1.0
-    return 1.0 / max(1, props.preview_fps)
+    return 1.0 / max(1, fps)
 
 
 @bpy.app.handlers.persistent
@@ -506,3 +638,12 @@ def invalidate():
     """Force the next tick to re-render even if nothing looks changed."""
     global _last_sig
     _last_sig = None
+
+
+def register():
+    pass
+
+
+def unregister():
+    stop()
+    _active_area_ptrs.clear()
