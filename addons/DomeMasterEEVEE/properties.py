@@ -9,6 +9,26 @@ from bpy.props import (
 )
 
 
+def _get_output_dir(self):
+    value = self.get("_output_dir", "")
+    if value:
+        return value
+    addon = bpy.context.preferences.addons.get(__package__)
+    if addon and addon.preferences.last_output_dir:
+        return addon.preferences.last_output_dir
+    return "//domemaster/"
+
+
+def _set_output_dir(self, value):
+    self["_output_dir"] = value
+    addon = bpy.context.preferences.addons.get(__package__)
+    if addon:
+        # Addon preferences aren't scoped to any one file, so a "//"
+        # relative path (meaningless without a file to resolve it against)
+        # would just warn and get rejected -- store the absolute form.
+        addon.preferences.last_output_dir = bpy.path.abspath(value)
+
+
 class DOMEMASTEREEVEEProperties(bpy.types.PropertyGroup):
     """Global properties shared across all modules"""
 
@@ -201,21 +221,25 @@ class DOMEMASTEREEVEEProperties(bpy.types.PropertyGroup):
     # ------------------------------------------------------------------ #
     output_dir: StringProperty(
         name="Output Folder",
-        description="Where domemaster frames are written",
-        default="//domemaster/",
+        description=(
+            "Where domemaster frames are written. Remembered across new "
+            "files -- each file also keeps its own value once set here"
+        ),
         subtype='DIR_PATH',
+        get=_get_output_dir,
+        set=_set_output_dir,
     )
 
     output_format: EnumProperty(
         name="Format",
         description="File format for the domemaster output",
         items=[
-            ('OPEN_EXR', "OpenEXR",
+            ('OPEN_EXR', "EXR",
              "32-bit linear float, no clipping. Correct for a fulldome pipeline"),
             ('PNG', "PNG", "8/16-bit, view transform applied"),
             ('JPEG', "JPEG", "8-bit lossy, view transform applied"),
         ],
-        default='OPEN_EXR',
+        default='PNG',
     )
 
     keep_faces: BoolProperty(

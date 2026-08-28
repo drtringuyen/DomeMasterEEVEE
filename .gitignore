@@ -28,3 +28,7 @@ build_info.json
 
 # Track the addon asset library (node groups, materials, etc.)
 !essentials.blend
+
+# Track the linkable dome camera rig asset (required at runtime, not a
+# build output -- see build_camera_rig_asset.py)
+!camera_rig.blend

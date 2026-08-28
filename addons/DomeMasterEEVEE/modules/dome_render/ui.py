@@ -89,6 +89,14 @@ class DOMEMASTEREEVEE_PT_DomeRender(bpy.types.Panel):
         row.operator("domemastereevee.optimize_scene_rendering",
                      icon='CAMERA_DATA')
 
+        if props.debug_mode:
+            info = box1.row()
+            info.enabled = False
+            info.label(
+                text="Dome Camera: %s" % (
+                    props.dome_camera.name if props.dome_camera else "None"),
+                icon='CAMERA_DATA', text_ctxt="extra-info-label")
+
         row = box1.row(align=True)
         switch_text = ("Switch to Original Camera" if props.using_dome_camera
                        else "Switch to Dome Camera")

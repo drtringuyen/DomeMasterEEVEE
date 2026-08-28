@@ -1,4 +1,3 @@
-import math
 import os
 import shutil
 import time
@@ -257,7 +256,10 @@ class DOMEMASTEREEVEE_OT_OpenOutputFolder(bpy.types.Operator):
         return {'FINISHED'}
 
 
-CAMERA_NAME = "Camera-DOME-Master"
+RIG_COLLECTION_NAME = "DOMEMASTER-CameraRig"
+RIG_TAG = "dme_rig"
+DOME_CAMERA_TAG = "dme_dome_camera"
+DIRECTOR_BONE_NAME = "DEF-CAM-Director"
 
 
 def _remember_original_camera(props, scene):
@@ -268,15 +270,95 @@ def _remember_original_camera(props, scene):
     props.prev_resolution_y = r.resolution_y
 
 
+def _rig_asset_path():
+    addon_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(addon_root, "assets", "camera_rig.blend")
+
+
+def _find_tagged_object(scene, tag):
+    """Search only the given scene's objects, not the whole file -- a
+    director's file can have more than one scene, and bpy.data.objects would
+    also match a tagged rig that belongs to a different one."""
+    for obj in scene.objects:
+        if obj.get(tag):
+            return obj
+    return None
+
+
+def _link_and_override_rig(context):
+    """Link the bundled camera-rig collection and create a fully editable
+    local override of it. Returns the override CameraRig armature object.
+    No-op (just returns the existing one) if a rig is already present,
+    linked or overridden, from an earlier run."""
+    existing = _find_tagged_object(context.scene, RIG_TAG)
+    if existing is not None:
+        return existing, False
+
+    asset_path = _rig_asset_path()
+    if not os.path.isfile(asset_path):
+        raise RuntimeError("Camera rig asset missing: %s" % asset_path)
+
+    with bpy.data.libraries.load(asset_path, link=True) as (data_from, data_to):
+        if RIG_COLLECTION_NAME not in data_from.collections:
+            raise RuntimeError(
+                "'%s' not found in %s" % (RIG_COLLECTION_NAME, asset_path))
+        data_to.collections = [RIG_COLLECTION_NAME]
+
+    linked_coll = data_to.collections[0]
+    context.scene.collection.children.link(linked_coll)
+
+    override_coll = linked_coll.override_hierarchy_create(
+        context.scene, context.view_layer, do_fully_editable=True)
+
+    # override_hierarchy_create() leaves the original linked collection in
+    # the scene alongside the new override -- without this the director's
+    # file ends up with both the read-only linked rig and the editable
+    # override rig visible/selectable at once.
+    if linked_coll.name in context.scene.collection.children:
+        context.scene.collection.children.unlink(linked_coll)
+
+    cam_rig = None
+    for obj in override_coll.objects:
+        if obj.get(RIG_TAG):
+            cam_rig = obj
+            break
+    if cam_rig is None:
+        raise RuntimeError(
+            "Linked rig is missing the '%s' tag on its armature" % RIG_TAG)
+    return cam_rig, True
+
+
+def _retarget_rig(cam_rig, director_cam):
+    """Point both places the rig references the director's camera at the
+    given object: the armature's object-level Copy Transforms, and the
+    DEF-CAM-Director bone's own Copy Transforms."""
+    obj_ct = cam_rig.constraints.get("Copy Transforms")
+    if obj_ct is None:
+        raise RuntimeError("CameraRig has no 'Copy Transforms' constraint")
+    obj_ct.target = director_cam
+
+    def_bone = cam_rig.pose.bones.get(DIRECTOR_BONE_NAME)
+    if def_bone is None:
+        raise RuntimeError("Rig has no '%s' bone" % DIRECTOR_BONE_NAME)
+    bone_ct = def_bone.constraints.get("Copy Transforms")
+    if bone_ct is None:
+        raise RuntimeError(
+            "'%s' bone has no 'Copy Transforms' constraint" % DIRECTOR_BONE_NAME)
+    bone_ct.target = director_cam
+
+
 class DOMEMASTEREEVEE_OT_OptimizeSceneRendering(bpy.types.Operator):
-    """Create the dome master camera (from the selected camera's position,
-    or the 3D cursor if none is selected), point it straight up, make it the
-    scene camera, set it to orthographic with a size-6 view and full
-    passepartout, match the render resolution to the domemaster Output
-    Resolution, and then apply the usual render-time optimizations: enable
-    Persistent Data (avoids re-uploading geometry/BVH for each of the 5 cube
-    faces), cap render samples, disable Ray Tracing, cap shadow step count,
-    and turn off Motion Blur"""
+    """Link the Dome Camera Rig asset (creating a library override on first
+    run, or reusing one already in the file), point its Copy Transforms
+    constraints at the selected camera so CAM-Dome tracks it, set CAM-Dome as
+    the Dome Camera, and then apply the usual render-time optimizations:
+    enable Persistent Data (avoids re-uploading geometry/BVH for each of the
+    5 cube faces), cap render samples, disable Ray Tracing, cap shadow step
+    count, and turn off Motion Blur. Leaves the scene's render resolution
+    and aspect ratio alone -- the domemaster capture/preview pipeline reads
+    Output Resolution directly and never looks at scene.render, so there is
+    nothing to keep in sync, and the director's own resolution stays intact
+    for their own non-dome renders"""
 
     bl_idname = "domemastereevee.optimize_scene_rendering"
     bl_label = "Setup Camera & Optimize Scene"
@@ -289,6 +371,14 @@ class DOMEMASTEREEVEE_OT_OptimizeSceneRendering(bpy.types.Operator):
         name="Max Shadow Steps", default=4, min=1, max=32,
         description="Shadow step count is capped to this value if higher")
 
+    @classmethod
+    def poll(cls, context):
+        active = context.view_layer.objects.active
+        if active is None or active.type != 'CAMERA':
+            cls.poll_message_set("Select the director's camera first")
+            return False
+        return True
+
     def execute(self, context):
         scene = context.scene
         props = _props(context)
@@ -296,51 +386,34 @@ class DOMEMASTEREEVEE_OT_OptimizeSceneRendering(bpy.types.Operator):
         r = scene.render
         changes = []
 
-        active = context.view_layer.objects.active
-        selected_cams = [o for o in context.selected_objects if o.type == 'CAMERA']
-        if active is not None and active.type == 'CAMERA' and active in selected_cams:
-            position = active.matrix_world.translation.copy()
-        elif selected_cams:
-            position = selected_cams[0].matrix_world.translation.copy()
-        else:
-            position = scene.cursor.location.copy()
+        director_cam = context.view_layer.objects.active
+        if director_cam.get(DOME_CAMERA_TAG) or director_cam.get(RIG_TAG):
+            self.report({'ERROR'},
+                        "Selected camera is the dome rig itself - select "
+                        "the director's own camera instead")
+            return {'CANCELLED'}
 
-        main_cam = scene.camera
-        target_collections = list(main_cam.users_collection) if main_cam is not None else []
-        if not target_collections:
-            target_collections = [context.collection]
+        try:
+            cam_rig, created = _link_and_override_rig(context)
+            _retarget_rig(cam_rig, director_cam)
+        except RuntimeError as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
 
-        if scene.camera is None or scene.camera.name != CAMERA_NAME:
-            _remember_original_camera(props, scene)
+        cam_dome = _find_tagged_object(scene, DOME_CAMERA_TAG)
+        if cam_dome is None:
+            self.report({'ERROR'}, "Linked rig is missing its CAM-Dome camera")
+            return {'CANCELLED'}
 
-        existing = bpy.data.objects.get(CAMERA_NAME)
-        if existing is not None:
-            old_data = existing.data
-            bpy.data.objects.remove(existing, do_unlink=True)
-            if old_data is not None and old_data.users == 0:
-                bpy.data.cameras.remove(old_data)
+        props.dome_camera = cam_dome
+        changes.append(
+            "%s dome rig, retargeted to '%s'"
+            % ("Linked" if created else "Reused", director_cam.name))
 
-        cam_data = bpy.data.cameras.new(CAMERA_NAME)
-        cam_data.type = 'ORTHO'
-        cam_data.ortho_scale = 6.0
-        cam_data.passepartout_alpha = 1.0
-
-        cam_obj = bpy.data.objects.new(CAMERA_NAME, cam_data)
-        cam_obj.location = position
-        cam_obj.rotation_euler = (math.pi, 0.0, 0.0)
-        for coll in target_collections:
-            coll.objects.link(cam_obj)
-
-        scene.camera = cam_obj
-        props.dome_camera = cam_obj
-        props.using_dome_camera = True
-        changes.append("Created '%s' (ortho, size 6, facing up)" % CAMERA_NAME)
-
-        if r.resolution_x != props.output_resolution or r.resolution_y != props.output_resolution:
-            r.resolution_x = props.output_resolution
-            r.resolution_y = props.output_resolution
-            changes.append("Render Resolution -> %dx%d"
-                            % (props.output_resolution, props.output_resolution))
+        for obj in context.selected_objects:
+            obj.select_set(False)
+        cam_dome.select_set(True)
+        context.view_layer.objects.active = cam_dome
 
         if not r.use_persistent_data:
             r.use_persistent_data = True

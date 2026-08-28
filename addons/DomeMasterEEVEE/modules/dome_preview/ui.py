@@ -36,9 +36,9 @@ class DOMEMASTEREEVEE_PT_DomePreview(bpy.types.Panel):
         if props.dome_camera is None:
             box = col.box()
             box.alert = True
-            box.label(text="No Dome Camera selected", icon='ERROR')
+            box.label(text="No Dome Camera - run Setup Camera & Optimize Scene",
+                       icon='ERROR')
 
-        col.prop(props, "dome_camera")
         col.prop(props, "preview_placement")
 
         r3d = getattr(context.space_data, "region_3d", None)

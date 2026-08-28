@@ -13,7 +13,8 @@ bl_info = {
 MODULES = {}
 
 def register():
-    from . import properties, infos, panels
+    from . import preferences, properties, infos, panels
+    preferences.register()
     properties.register()
     infos.register()
     panels.register()
@@ -25,7 +26,8 @@ def unregister():
     from . import module_manager
     module_manager.unload_all()
 
-    from . import properties, infos, panels
+    from . import preferences, properties, infos, panels
     panels.unregister()
     infos.unregister()
     properties.unregister()
+    preferences.unregister()
